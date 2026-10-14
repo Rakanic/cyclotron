@@ -108,6 +108,38 @@ pub enum CSRType {
     RCI = 7,
 }
 
+/// FP32 bits -> BF16 bits under RISC-V rounding mode `rm` (000 RNE, 001 RTZ, 010 RDN, 011 RUP, 100 RMM; 111 dynamic:
+/// RNE, frm is not modelled). NaN -> the canonical BF16 qNaN.
+fn f32_to_bf16(a: u32, rm: u8) -> u16 {
+    if f32::from_bits(a).is_nan() {
+        return 0x7fc0;
+    }
+    let (hi, lo, neg) = (a >> 16, a & 0xffff, a >> 31 == 1);
+    let up = match rm {
+        1 => false,                                     // RTZ
+        2 => neg && lo != 0,                            // RDN: away from zero when negative
+        3 => !neg && lo != 0,                           // RUP
+        4 => lo >= 0x8000,                              // RMM
+        _ => lo > 0x8000 || (lo == 0x8000 && hi & 1 == 1), // RNE
+    };
+    (hi + up as u32) as u16
+}
+
+/// An FP instruction the model does not implement: say so once per encoding (its destination is left unwritten).
+fn unknown_fp_op(issued: &IssuedInst) {
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+    static SEEN: Mutex<Option<HashSet<(u8, u8, u8, u8)>>> = Mutex::new(None);
+    let key = (issued.opcode, issued.f3, issued.f7, issued.rs2_addr);
+    let mut seen = SEEN.lock().unwrap();
+    if seen.get_or_insert_with(HashSet::new).insert(key) {
+        eprintln!(
+            "cyclotron: unimplemented FP instruction (opcode 0x{:02x} f3 {:03b} f7 {:07b} rs2 {}): rd not written",
+            issued.opcode, issued.f3, issued.f7, issued.rs2_addr
+        );
+    }
+}
+
 #[derive(Debug)]
 pub struct InstImp<const N: usize>(pub &'static str, pub fn([u32; N]) -> u32);
 
@@ -261,6 +293,19 @@ impl ExecuteUnit {
             op(f32::from_bits(a), f32::from_bits(b)) as u32
         }
 
+        // BF16 ("h": fmt 10 is BF16 on Muon, FPPipe.scala:80-81) compares: 0 / 1 in the integer register
+        fn bf16_cmp_op(a: u32, b: u32, op: fn(f32, f32) -> bool) -> u32 {
+            op(
+                bf16::from_bits((a & 0xffff) as u16).to_f32(),
+                bf16::from_bits((b & 0xffff) as u16).to_f32(),
+            ) as u32
+        }
+
+        // BF16 sign injection on the raw bits, sign-extended as every BF16 result (signExtendFp16Lanes)
+        fn bf16_fsgn_op(a: u32, b: u32, op: fn(u16, u16) -> u16) -> u32 {
+            sign_ext::<16>(op((a & 0xffff) as u16, (b & 0xffff) as u16) as u32) as u32
+        }
+
         fn fp32_fsgn_op(a: u32, b: u32, op: fn(f32, u32) -> f32) -> u32 {
             op(f32::from_bits(a), b).to_bits()
         }
@@ -334,6 +379,12 @@ impl ExecuteUnit {
             0b001_1010000u16 => InstImp("flt.s",    |[a, b]| { fp32_cmp_op(a, b, |x, y| { x < y }) }),
             0b000_1010000u16 => InstImp("fle.s",    |[a, b]| { fp32_cmp_op(a, b, |x, y| { x <= y }) }),
             0b001_1110000u16 => InstImp("fclass.s", |[a, _b]| { fp32_fclass(a) }),
+            0b010_1010010u16 => InstImp("feq.h",    |[a, b]| { bf16_cmp_op(a, b, |x, y| { x == y }) }),
+            0b001_1010010u16 => InstImp("flt.h",    |[a, b]| { bf16_cmp_op(a, b, |x, y| { x < y }) }),
+            0b000_1010010u16 => InstImp("fle.h",    |[a, b]| { bf16_cmp_op(a, b, |x, y| { x <= y }) }),
+            0b000_0010010u16 => InstImp("fsgnj.h",  |[a, b]| { bf16_fsgn_op(a, b, |x, y| { (x & 0x7fff) | (y & 0x8000) }) }),
+            0b001_0010010u16 => InstImp("fsgnjn.h", |[a, b]| { bf16_fsgn_op(a, b, |x, y| { (x & 0x7fff) | (!y & 0x8000) }) }),
+            0b010_0010010u16 => InstImp("fsgnjx.h", |[a, b]| { bf16_fsgn_op(a, b, |x, y| { x ^ (y & 0x8000) }) }),
         };
 
         static OPFP_F7_FP32_INSTS: phf::Map<u8, InstImp<3>> = phf_map! {
@@ -356,6 +407,20 @@ impl ExecuteUnit {
 
         let fmt = issued_inst.f7 & 0b11;
         let f7_base = issued_inst.f7 & !0b11;
+        // fcvt between FP32 and BF16 (F2F, funct5 01000): source format = rs2[2:0] (0 FP32, 2 BF16), rounding = f3
+        // (111: dynamic, frm -- not modelled here, RNE). FPPipe.scala:66, 79-82.
+        if issued_inst.opcode == Opcode::OP_FP && f7_base == 0b0100000 {
+            let a = issued_inst.rs1_data[lane].unwrap();
+            let src = issued_inst.rs2_addr & 0b111;
+            return match (fmt, src) {
+                (0b10, 0) => Some(sign_ext::<16>(f32_to_bf16(a, issued_inst.f3) as u32) as u32), // fcvt.h.s
+                (0b00, 2) => Some((a & 0xffff) << 16),                                          // fcvt.s.h
+                _ => {
+                    unknown_fp_op(issued_inst);
+                    None
+                }
+            };
+        }
         let rd_data = match issued_inst.opcode {
             Opcode::OP_FP => OPFP_F3F7_INSTS
                 .get(&(f3_f7_mask!(issued_inst.f3, issued_inst.f7)))
@@ -384,6 +449,10 @@ impl ExecuteUnit {
                             ]
                         ))
                     })
+                })
+                .or_else(|| {
+                    unknown_fp_op(issued_inst);
+                    None
                 }),
             Opcode::MADD | Opcode::MSUB | Opcode::NM_ADD | Opcode::NM_SUB => {
                 let imp = if fmt == 0b10 {
