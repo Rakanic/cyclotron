@@ -20,6 +20,9 @@ pub struct GmemPolicyConfig {
     pub l0_flush_mmio_size: u64,
     pub flush_bytes: u32,
     pub seed: u64,
+    /// A store miss fills its line at every level, as Rocket's DCache (Muon L0 / L1) and the InclusiveCache L2 do
+    /// (write-allocate); false: stores never fill (later stores to the line keep missing)
+    pub write_allocate: bool,
 }
 
 impl Default for GmemPolicyConfig {
@@ -42,6 +45,7 @@ impl Default for GmemPolicyConfig {
             l0_flush_mmio_size: 0x100,
             flush_bytes: 4096,
             seed: 0,
+            write_allocate: false,
         };
         s.ensure_valid();
         s

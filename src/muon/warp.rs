@@ -184,9 +184,12 @@ impl Warp {
     pub fn frontend(&mut self, schedule: Schedule) -> MicroOp {
         // fetch
         let inst = self.fetch(schedule.pc);
+        let cycle = self.base.cycle;   // one per core tick: the core's cycle
         for c in self.state_mut().csr_file.iter_mut() {
             c.emu_access(0xcc3, schedule.active_warps);
             c.emu_access(0xcc4, schedule.mask);
+            c.emu_access(0xb00, cycle as u32); // mcycle (kernels stamp their start / end / phases with it)
+            c.emu_access(0xb80, (cycle >> 32) as u32); // mcycleh
         }
         self.frontend_nofetch(schedule, inst)
     }
@@ -292,7 +295,8 @@ impl Warp {
             }
             Opcode::MISC_MEM => {
                 let active_lanes = tmask.count_ones();
-                if active_lanes > 0 {
+                // with the hazard model, fence.s only orders shared memory (muon/hazards.rs): no cache flush
+                if active_lanes > 0 && !timing_model.hazards.is_smem_fence(&decoded) {
                     let flush_req = if decoded.f3 == 1 {
                         GmemRequest::new_flush_l0(self.wid, 1)
                     } else {
@@ -482,6 +486,7 @@ impl Warp {
                     address: req.addr,
                     size: req.size,
                     data: trace_mem_data(req, resp),
+                    req_cycle: self.base.cycle,
                 })
             })
             .collect::<Vec<_>>();

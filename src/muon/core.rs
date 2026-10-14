@@ -247,17 +247,29 @@ impl MuonCore {
                                     .set_resource_wait_until(wid, Some(now.saturating_add(1)));
                                 self.scheduler.replay_instruction(wid);
                                 None
+                            } else if timing_model.hazards.ready_at(wid, &ib.inst) > now {
+                                // a source register not yet written, a redirect, a divide, a fence.s
+                                // (muon/hazards.rs): the warp waits and replays this instruction
+                                let ready = timing_model.hazards.ready_at(wid, &ib.inst);
+                                timing_model.hazards.note_stall();
+                                self.scheduler.set_resource_wait_until(wid, Some(ready));
+                                self.scheduler.replay_instruction(wid);
+                                None
                             } else {
                                 let mut shared_mem =
                                     shared_mem.write().expect("shared memory lock poisoned");
-                                warp.backend_timed(
+                                let wb = warp.backend_timed(
                                     ib,
                                     &mut self.scheduler,
                                     neutrino,
                                     &mut *shared_mem,
                                     timing_model,
                                     now,
-                                )?
+                                )?;
+                                if wb.is_some() {
+                                    timing_model.hazards.issued(wid, &ib.inst, now);
+                                }
+                                wb
                             }
                         }
                         None => None,
@@ -298,6 +310,7 @@ impl MuonCore {
 
         let tracer = Arc::get_mut(&mut self.tracer).expect("failed to get tracer");
         tracer.record(&writebacks);
+        tracer.stamp_cycle(&writebacks, now);
         let mem_tracer = Arc::get_mut(&mut self.mem_tracer).expect("failed to get mem tracer");
         mem_tracer.record(&mem_trace_lines);
 

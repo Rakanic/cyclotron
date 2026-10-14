@@ -1046,7 +1046,7 @@ impl ClusterGmemGraph {
         if !request.kind.is_mem() {
             return;
         }
-        if !request.is_load {
+        if !request.is_load && !self.policy.write_allocate {
             return;
         }
 

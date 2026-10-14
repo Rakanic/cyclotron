@@ -77,6 +77,7 @@ impl CoreTimingModel {
         log_stats: bool,
         perf_log_session: Option<Arc<perf_log::PerfLogSession>>,
     ) -> Self {
+        let hazards = crate::muon::hazards::WarpHazards::new(config.hazards.clone(), num_warps);
         let gmem_policy = config.memory.gmem.policy.clone();
         let gmem_stats_range = config.memory.gmem.stats_range;
         let smem_config = config.memory.smem.clone();
@@ -90,6 +91,7 @@ impl CoreTimingModel {
             .max(1);
 
         Self {
+            hazards,
             graph: CoreGraph::new(
                 config,
                 num_warps,

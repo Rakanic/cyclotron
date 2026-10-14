@@ -20,8 +20,8 @@ impl TraceDb {
         let has_regs = decoded_inst(line).has_regs();
         self.conn
             .execute(
-                "INSERT INTO inst (cluster_id, core_id, warp, pc, lane_mask, has_rs1, rs1_id, rs1_data, has_rs2, rs2_id, rs2_data)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                "INSERT INTO inst (cluster_id, core_id, warp, pc, lane_mask, has_rs1, rs1_id, rs1_data, has_rs2, rs2_id, rs2_data, cycle)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 (
                     cluster_id,
                     core_id,
@@ -34,6 +34,7 @@ impl TraceDb {
                     has_regs.rs2,
                     line.rs2_addr,
                     &rs2_string,
+                    line.cycle as i64,
                 ),
             )
             .expect("failed to insert into inst");
@@ -44,8 +45,8 @@ impl TraceDb {
         self.conn
             .execute(
                 &format!(
-                    "INSERT INTO {table} (cluster_id, core_id, lane_id, store, address, size, data)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
+                    "INSERT INTO {table} (cluster_id, core_id, lane_id, store, address, size, data, req_cycle)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"
                 ),
                 (
                     cluster_id,
@@ -55,6 +56,7 @@ impl TraceDb {
                     line.address,
                     line.size,
                     line.data,
+                    line.req_cycle as i64,
                 ),
             )
             .expect("failed to insert into memory trace table");

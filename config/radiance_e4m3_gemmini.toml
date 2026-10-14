@@ -1,0 +1,42 @@
+# Radiance cluster with MX-Gemmini, as RadianceE4M3MxGemminiSingleClusterTraceConfig (1 cluster, 2 Muon cores x 8
+# warps x 16 lanes, 128 KiB shared memory, E4M3 MX-Gemmini DIM 16). Muon timing calibrated on its VCS trace
+# (timing/radiance/*); Gemmini = libgemmini (cargo build --release --features gemmini).
+#   cargo run --release --features gemmini -- config/radiance_e4m3_gemmini.toml --timing --binary-path <kernel>.elf
+[muon]
+num_lanes = 16
+num_warps = 8
+num_cores = 2
+num_regs = 256
+start_pc = 0x10000000
+
+[mem]
+io_cout_addr = 0xFF080000
+io_cout_size = 64
+
+[sim]
+timeout = 30000000
+trace = false
+# The host's half of the nightly kernels' printBuf protocol (radiance-kernels lib/include/nightly/pb.h, at
+# 0x80000 + 8 * slot): LAUNCH (slot 0) and GO (slot 24) written up front; START / END (slots 2-5), the phase stamps
+# (8-15) and the GPU verify result (16-23: DONE, n, exact, ulp1, bad, poison, nonfinite, err) printed at the end.
+smem_init = [[0x80000, 0x6E1A0C11], [0x80004, 0x6E1A0C11], [0x800C0, 0x60C0FFEE], [0x800C4, 0x60C0FFEE]]
+smem_dump = [[0x80010, 16], [0x80040, 16], [0x80080, 16]]
+
+[gemmini]
+enabled = true
+mode = "both"
+preset = "radiance"
+
+[timing]
+include = [
+  "timing/radiance/gmem.toml",
+  "timing/icache.toml",
+  "timing/lsu_scheduler.toml",
+  "timing/smem.toml",
+  "timing/writeback_operand_fetch.toml",
+  "timing/barrier.toml",
+  "timing/fence.toml",
+  "timing/dma_tensor.toml",
+  "timing/radiance/execute.toml",
+  "timing/radiance/hazards.toml",
+]

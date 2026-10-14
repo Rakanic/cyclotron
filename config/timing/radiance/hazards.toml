@@ -1,0 +1,17 @@
+# Muon per-warp pipeline hazards (src/muon/hazards.rs), calibrated on the RTL (VCS
+# RadianceE4M3MxGemminiSingleClusterTraceConfig, fa_mxfp8_sr, 2026-10-07): cycles from an instruction to the
+# next one of its warp, measured with npu-exploration tools/radiance_trace_compare.py latency on the RTL trace
+# (sims/vcs/<test>.soc.sqlite). Each value is the RTL number minus 1: a stalled warp's replay costs cyclotron one
+# cycle of its own. Use with radiance/execute.toml (execute units that do not block their warp).
+[hazards]
+enabled = true
+alu = 3           # RTL: ALU -> dependent instruction 4
+mul = 36          # 37
+fp = 6            # FP32 -> dependent 7
+fp_half = 5       # BF16 (Muon "h") -> dependent 6
+sfu = 12          # fexp.h -> dependent 13
+load_shared = 12  # lw.shared -> use 13
+load_global = 15  # lw.global -> use 16 (an L0 hit; misses are the gmem model's)
+div = 37          # divide: holds its warp 38
+redirect = 8      # branch / jump / SIMT split-join-pred / CSR -> next instruction 9
+fence_smem = 9    # fence.s -> next instruction 10

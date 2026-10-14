@@ -40,6 +40,8 @@ pub struct Line {
     pub csr_imm: u8,
     pub tmask: u32,
     pub raw: u64,
+    /// the core cycle the instruction issued at (timing model; 0 without it)
+    pub cycle: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -51,6 +53,8 @@ pub struct MemTraceLine {
     pub address: u32,
     pub size: u32,
     pub data: u32,
+    /// the core cycle the access issued at (timing model; 0 without it)
+    pub req_cycle: u64,
 }
 
 impl fmt::Display for Line {
@@ -100,6 +104,7 @@ impl Tracer {
                     csr_imm: wb.inst.csr_imm,
                     tmask: wb.tmask,
                     raw: wb.inst.raw,
+                    cycle: 0,
                 };
                 buf.push_back(line);
                 // println!("trace: pushed line to buf for warp={}; len={}", wid, buf.len());
@@ -127,6 +132,17 @@ impl Tracer {
             return self.consume(wid);
         }
         None
+    }
+
+    /// Stamp the lines recorded since the last call (the back of each warp's buffer) with the core cycle.
+    pub fn stamp_cycle(&mut self, writebacks: &[Option<Writeback>], cycle: u64) {
+        for (wb, buf) in zip(writebacks.iter(), self.bufs.as_mut_slice()) {
+            if wb.is_some() {
+                if let Some(line) = buf.back_mut() {
+                    line.cycle = cycle;
+                }
+            }
+        }
     }
 
     pub fn len(&self, warp_id: usize) -> usize {

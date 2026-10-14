@@ -39,6 +39,8 @@ pub struct CoreGraphConfig {
     pub compute: ComputeConfig,
     #[serde(flatten)]
     pub io: IoConfig,
+    /// per-warp pipeline hazards (muon/hazards.rs): the [hazards] section, off by default
+    pub hazards: crate::muon::hazards::HazardConfig,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

@@ -1,0 +1,33 @@
+# Execute units for the hazard model (radiance/hazards.toml): no latency of their own, so issue_execute never makes
+# a warp wait for its instruction to finish (cyclotron's default blocks the warp on every instruction, which is a
+# dependence on everything: ~3 cycles per instruction, where the RTL issues independent ones every 1-2). Result
+# latencies are the hazard model's; the queues still bound each unit's throughput.
+[execute.alu]
+base_latency = 0
+bytes_per_cycle = 1024
+queue_capacity = 4
+completions_per_cycle = 1
+
+[execute.int_mul]
+base_latency = 0
+bytes_per_cycle = 1024
+queue_capacity = 2
+completions_per_cycle = 1
+
+[execute.int_div]
+base_latency = 0
+bytes_per_cycle = 1024
+queue_capacity = 2
+completions_per_cycle = 1
+
+[execute.fp]
+base_latency = 0
+bytes_per_cycle = 1024
+queue_capacity = 4
+completions_per_cycle = 1
+
+[execute.sfu]
+base_latency = 0
+bytes_per_cycle = 1024
+queue_capacity = 2
+completions_per_cycle = 1
