@@ -13,7 +13,7 @@ use crate::sim::trace::{MemTracer, Tracer};
 use crate::timeflow::{ClusterGmemGraph, CoreGraphConfig};
 use crate::timeq::module_now;
 use std::iter::zip;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 #[derive(Debug, Default)]
 pub struct MuonState {}
@@ -151,6 +151,13 @@ impl MuonCore {
         self.scheduler.spawn_n_warps(pc, &thread_idxs);
         for (warp, warp_thread_idxs) in self.warps.iter_mut().zip(thread_idxs.iter()) {
             warp.set_block_threads_bp(block_idx, warp_thread_idxs, bp);
+        }
+    }
+
+    /// Every warp reaches the cluster's Gemmini registers (crate::gemmini).
+    pub fn attach_gemmini(&mut self, dev: &Arc<Mutex<crate::gemmini::GemminiDevice>>) {
+        for warp in &mut self.warps {
+            warp.gemmini = Some(dev.clone());
         }
     }
 

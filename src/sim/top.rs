@@ -2,6 +2,7 @@ use crate::base::behavior::*;
 use crate::base::mem::HasMemory;
 use crate::cluster::Cluster;
 use crate::command_proc::CommandProcessor;
+use crate::gemmini::GemminiConfig;
 use crate::muon::config::MuonConfig;
 use crate::neutrino::config::NeutrinoConfig;
 use crate::sim::config::{MemConfig, SimConfig};
@@ -81,6 +82,24 @@ impl Sim {
         mem_config: MemConfig,
         timing_config: CoreGraphConfig,
     ) -> Sim {
+        Self::new_with_gemmini(
+            sim_config,
+            muon_config,
+            neutrino_config,
+            mem_config,
+            timing_config,
+            GemminiConfig::default(),
+        )
+    }
+
+    pub fn new_with_gemmini(
+        sim_config: SimConfig,
+        muon_config: MuonConfig,
+        neutrino_config: NeutrinoConfig,
+        mem_config: MemConfig,
+        timing_config: CoreGraphConfig,
+        gemmini_config: GemminiConfig,
+    ) -> Sim {
         let perf_log_session = if sim_config.timing {
             PerfLogSession::new().map(Arc::new)
         } else {
@@ -105,6 +124,7 @@ impl Sim {
                     muon_config,
                     neutrino_config,
                     timing_config,
+                    gemmini_config,
                 },
                 mem_config,
                 timing_enabled: sim_config.timing,
@@ -124,18 +144,63 @@ impl Sim {
         sim
     }
 
+    /// Each cluster's Gemmini runs to idle and reports (gemmini_report.txt in the perf log directory, by default).
+    fn finish_gemmini(&mut self) {
+        let dir = self.perf_log_session.as_ref().map(|s| s.run_dir().to_path_buf());
+        for (id, cluster) in self.top.clusters.iter().enumerate() {
+            if let Some(g) = &cluster.gemmini {
+                let mut g = g.lock().expect("gemmini lock poisoned");
+                let path = dir.as_ref().map(|d| d.join(format!("gemmini_report_cluster{}.txt", id)));
+                let done = g.finish(path);
+                println!(
+                    "Cyclotron: cluster {} gemmini: {} commands ({} INST stores waited), busy until cycle {}",
+                    id, g.commands, g.refused, done
+                );
+            }
+        }
+    }
+
+    fn smem_init(&mut self) {
+        for cluster in &self.top.clusters {
+            let mut smem = cluster.cores[0].shared_mem.write().expect("shared memory lock poisoned");
+            for &[addr, value] in &self.config.smem_init {
+                smem.write(addr as usize, &value.to_le_bytes()).expect("[sim] smem_init write failed");
+            }
+        }
+    }
+
+    fn smem_dump(&self) {
+        for (id, cluster) in self.top.clusters.iter().enumerate() {
+            let smem = cluster.cores[0].shared_mem.read().expect("shared memory lock poisoned");
+            for &[addr, count] in &self.config.smem_dump {
+                let words = (0..count)
+                    .map(|i| {
+                        let w = smem.read_n::<4>((addr + 4 * i) as usize).expect("[sim] smem_dump read failed");
+                        format!("{:08x}", u32::from_le_bytes(w))
+                    })
+                    .collect::<Vec<_>>();
+                println!("Cyclotron: cluster {} smem 0x{:x}: {}", id, addr, words.join(" "));
+            }
+        }
+    }
+
     pub fn simulate(&mut self) -> Result<(), u32> {
         self.top.reset();
+        self.smem_init();
         for cycle in 0..self.top.timeout {
             if self.top.finished() {
                 println!("simulation finished after {} cycles", cycle + 1);
                 self.write_timing_summary();
+                self.finish_gemmini();
+                self.smem_dump();
                 return self.check_tohost();
             }
             self.tick();
         }
 
         self.write_timing_summary();
+        self.finish_gemmini();
+        self.smem_dump();
 
         Err(0)
     }
@@ -183,6 +248,8 @@ pub struct ClusterConfig {
     pub muon_config: MuonConfig,
     pub neutrino_config: NeutrinoConfig,
     pub timing_config: CoreGraphConfig,
+    #[serde(default)]
+    pub gemmini_config: GemminiConfig,
 }
 
 pub struct CyclotronTop {

@@ -13,6 +13,11 @@ pub struct SimConfig {
     pub timeout: u64,
     pub trace: bool,
     pub timing: bool,
+    /// Words written into every cluster's shared memory before the run, [address, value]: what a host would have
+    /// put there (e.g. the nightly kernels' printBuf LAUNCH / GO magics at 0x80000)
+    pub smem_init: Vec<[u32; 2]>,
+    /// Shared-memory words printed after the run, [address, count] (e.g. the nightly verify slots)
+    pub smem_dump: Vec<[u32; 2]>,
 }
 
 pub trait Config: DeserializeOwned + Default {
@@ -37,6 +42,8 @@ impl Default for SimConfig {
             timeout: 10000000,
             trace: false,
             timing: false,
+            smem_init: Vec::new(),
+            smem_dump: Vec::new(),
         }
     }
 }

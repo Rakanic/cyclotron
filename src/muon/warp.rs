@@ -21,7 +21,7 @@ use std::fmt::{Display, Formatter};
 use std::iter::zip;
 use std::ops::DerefMut;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 #[derive(Debug, Default)]
 pub struct WarpState {
@@ -34,6 +34,8 @@ pub struct Warp {
     pub wid: usize,
     logger: Arc<Logger>,
     gmem: Arc<RwLock<FlatMemory>>,
+    /// The cluster's Gemmini: shared-memory accesses to its register block go to it (crate::gemmini)
+    pub gemmini: Option<Arc<Mutex<crate::gemmini::GemminiDevice>>>,
 }
 
 impl ModuleBehaviors for Warp {
@@ -154,6 +156,7 @@ impl Warp {
             wid: config.lane_config.warp_id,
             logger: logger.clone(),
             gmem,
+            gemmini: None,
         };
         me.init_conf(config);
         me
@@ -267,6 +270,11 @@ impl Warp {
         match decoded.opcode {
             Opcode::LOAD | Opcode::STORE => {
                 if let Some(issue) = self.build_timed_mem_issue(&decoded, tmask) {
+                    if self.route_mem_to_smem(&decoded) && !self.gemmini_store_ready(&issue, now) {
+                        scheduler.set_resource_wait_until(self.wid, Some(now.saturating_add(1)));
+                        scheduler.replay_instruction(self.wid);
+                        return Ok(None);
+                    }
                     if self.route_mem_to_smem(&decoded) {
                         if self
                             .issue_smem_request(&issue, scheduler, timing_model, now)
@@ -517,6 +525,21 @@ impl Warp {
 
     /// Handle a per-lane memory request and generate a MemResponse.
     pub fn mem_response(&mut self, mem_req: &MemRequest, smem: &mut FlatMemory) -> MemResponse {
+        if mem_req.is_smem {
+            if let Some(g) = self.gemmini.clone() {
+                let mut g = g.lock().expect("gemmini lock poisoned");
+                if g.matches(mem_req.addr) {
+                    return if mem_req.is_store {
+                        let data = mem_req.data.expect("store req missing a data field");
+                        g.store(mem_req.addr, mask_mem_data(data, mem_req.size), mem_req.size);
+                        MemResponse { data: None, is_sext: mem_req.is_sext }
+                    } else {
+                        let word = g.load(mem_req.addr >> 2 << 2, 4);
+                        MemResponse { data: Some(word.to_le_bytes()), is_sext: mem_req.is_sext }
+                    };
+                }
+            }
+        }
         let mut gmem = self.gmem.write().expect("lock poisoned");
         let mem = if mem_req.is_smem {
             smem
@@ -635,6 +658,21 @@ impl Warp {
             .issue_gmem_request(now, self.wid, request, scheduler)
             .map(|_| ())
             .map_err(|_| ())
+    }
+
+    /// A shared-memory store to Gemmini's INST register is taken only while its command path has room.
+    fn gemmini_store_ready(&self, issue: &TimedMemIssue, now: Cycle) -> bool {
+        let Some(g) = &self.gemmini else {
+            return true;
+        };
+        if issue.opcode != Opcode::STORE {
+            return true;
+        }
+        let mut g = g.lock().expect("gemmini lock poisoned");
+        issue
+            .lane_addrs
+            .iter()
+            .all(|&a| !g.matches(a as u32) || g.store_ready(now, a as u32))
     }
 
     fn route_mem_to_smem(&self, decoded: &DecodedInst) -> bool {

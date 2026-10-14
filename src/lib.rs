@@ -3,6 +3,7 @@ pub mod builtin;
 pub mod cluster;
 pub mod command_proc;
 pub mod dpi;
+pub mod gemmini;
 pub mod memfuzz;
 pub mod muon;
 pub mod neutrino;

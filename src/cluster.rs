@@ -1,4 +1,5 @@
 use crate::base::behavior::*;
+use crate::gemmini::GemminiDevice;
 use crate::muon::core::MuonCore;
 use crate::neutrino::neutrino::Neutrino;
 use crate::sim::flat_mem::FlatMemory;
@@ -6,13 +7,38 @@ use crate::sim::log::Logger;
 use crate::sim::perf_log::PerfLogSession;
 use crate::sim::top::ClusterConfig;
 use log::info;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 pub struct Cluster {
     id: usize,
     pub cores: Vec<MuonCore>,
     pub neutrino: Neutrino,
     scheduled_threadblocks: usize,
+    /// The cluster's MX-Gemmini ([gemmini] enabled): its registers are in shared memory, its scratchpad is it
+    pub gemmini: Option<Arc<Mutex<GemminiDevice>>>,
+    cycle: u64,
+}
+
+/// The cluster's Gemmini, if configured, over its shared memory; every warp of every core reaches its registers.
+fn attach_gemmini(
+    config: &ClusterConfig,
+    gmem: &Arc<RwLock<FlatMemory>>,
+    shared_mem: &Arc<RwLock<FlatMemory>>,
+    cores: &mut [MuonCore],
+) -> Option<Arc<Mutex<GemminiDevice>>> {
+    if !config.gemmini_config.enabled {
+        return None;
+    }
+    let mut smem = shared_mem.write().expect("shared memory lock poisoned");
+    let dev = Arc::new(Mutex::new(GemminiDevice::new(
+        &config.gemmini_config,
+        gmem.clone(),
+        &mut smem,
+    )));
+    for core in cores.iter_mut() {
+        core.attach_gemmini(&dev);
+    }
+    Some(dev)
 }
 
 impl Cluster {
@@ -37,11 +63,14 @@ impl Cluster {
                 shared_mem.clone(),
             ));
         }
+        let gemmini = attach_gemmini(&config, &gmem, &shared_mem, &mut cores);
         Cluster {
             id,
             cores,
             neutrino: Neutrino::new(Arc::new(config.neutrino_config)),
             scheduled_threadblocks: 0,
+            gemmini,
+            cycle: 0,
         }
     }
 
@@ -74,11 +103,14 @@ impl Cluster {
                 perf_log_session.clone(),
             ));
         }
+        let gemmini = attach_gemmini(&config, &gmem, &shared_mem, &mut cores);
         Cluster {
             id,
             cores,
             neutrino: Neutrino::new(Arc::new(config.neutrino_config)),
             scheduled_threadblocks: 0,
+            gemmini,
+            cycle: 0,
         }
     }
 
@@ -108,6 +140,10 @@ impl Cluster {
 
 impl ModuleBehaviors for Cluster {
     fn tick_one(&mut self) {
+        if let Some(g) = &self.gemmini {
+            g.lock().expect("gemmini lock poisoned").set_now(self.cycle);
+        }
+        self.cycle += 1;
         for core in &mut self.cores {
             core.tick_one();
             core.process(&mut self.neutrino).unwrap();

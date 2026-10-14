@@ -1,3 +1,4 @@
+use crate::gemmini::GemminiConfig;
 use crate::muon::config::MuonConfig;
 use crate::neutrino::config::NeutrinoConfig;
 use crate::sim::config::{Config, MemConfig, SimConfig};
@@ -111,6 +112,10 @@ pub fn make_sim(toml_string: Option<&str>, cli_args: &Option<CyclotronArgs>) -> 
     let mem_config = MemConfig::from_section(maybe_get(&config_table, "mem"));
     let mut muon_config = MuonConfig::from_section(maybe_get(&config_table, "muon"));
     let mut neutrino_config = NeutrinoConfig::from_section(maybe_get(&config_table, "neutrino"));
+    let gemmini_config = match maybe_get(&config_table, "gemmini") {
+        Some(section) => GemminiConfig::from_section(Some(section)),
+        None => GemminiConfig::default(),
+    };
 
     let config_path = cli_args.as_ref().and_then(|args| {
         if args.config_path.as_os_str().is_empty() {
@@ -135,11 +140,12 @@ pub fn make_sim(toml_string: Option<&str>, cli_args: &Option<CyclotronArgs>) -> 
 
     neutrino_config.muon_config = muon_config.clone();
 
-    Sim::new_with_timing(
+    Sim::new_with_gemmini(
         sim_config,
         muon_config,
         neutrino_config,
         mem_config,
         timing_config,
+        gemmini_config,
     )
 }

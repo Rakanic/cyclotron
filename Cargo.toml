@@ -21,6 +21,14 @@ phf = { version = "0.13.1", features = ["macros"] }
 anyhow = "1.0.100"
 half = "2.7.1"
 
+[build-dependencies]
+cc = "1.2"
+
+[features]
+# MX-Gemmini in the cluster (src/gemmini.rs): builds libgemmini/ (C++17) into the crate. Needs gemmini-rocc-tests'
+# include/vpu_ref.h: $GEMMINI_ROCC_TESTS, else ../../gemmini/software/gemmini-rocc-tests (the chipyard tree)
+gemmini = []
+
 [lib]
 name = "cyclotron"
 crate-type = ["rlib", "cdylib"]

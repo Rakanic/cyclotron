@@ -54,6 +54,16 @@ impl FlatMemory {
         Self { bytes, config }
     }
 
+    /// The backing bytes, for a device that shares this memory (Gemmini's scratchpad in shared memory). The vector
+    /// never resizes, so the pointer stays valid as long as the memory lives.
+    pub fn as_mut_ptr(&mut self) -> *mut u8 {
+        self.bytes.as_mut_ptr()
+    }
+
+    pub fn len(&self) -> usize {
+        self.bytes.len()
+    }
+
     pub fn copy_elf(&mut self, elf: &ElfBackedMem) {
         for (section, data) in elf.sections.iter() {
             let (start, end) = *section;

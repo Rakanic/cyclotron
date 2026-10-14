@@ -268,7 +268,7 @@ impl Scoreboard {
         assert!(!entry.dispatched, "job already dispatched");
         entry.dispatched = true;
 
-        if job_id.task_id < 8 { // barriers
+        if job_id.task_id < crate::neutrino::neutrino::NUM_BARRIER_IDS { // barriers
              // do nothing
         } else {
             panic!("task id {} not implemented", job_id.task_id)

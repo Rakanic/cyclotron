@@ -13,6 +13,9 @@ use crate::utils::BitSlice;
 use log::{debug, info};
 use std::sync::Arc;
 
+/// vx_bar barrier IDs (task IDs below this are barriers): the RTL's MuonCore barrierBits = 4.
+pub const NUM_BARRIER_IDS: u32 = 16;
+
 #[derive(Default)]
 pub struct NeutrinoState {}
 
@@ -69,8 +72,10 @@ impl Neutrino {
                 let task = rf.read_gpr(issued.rs1_addr);
                 // `vx_bar` is lowered onto the Neutrino encoding, but its operands
                 // do not follow generic nu.invoke semantics. For barrier task IDs,
-                // rs1 is the barrier ID and rs2 is the participant count.
-                let (deps, num_elems) = if task < 8 {
+                // rs1 is the barrier ID and rs2 is the participant count. The RTL
+                // has 16 barrier IDs (MuonCore barrierBits = 4); kernels use them all
+                // (nightly: 9 / 10 for background stores, 15 for the kernel end).
+                let (deps, num_elems) = if task < NUM_BARRIER_IDS {
                     (Vec::new(), rf.read_gpr(issued.rs2_addr))
                 } else {
                     (

@@ -1,0 +1,3 @@
+[submodule "libgemmini"]
+	path = libgemmini
+	url = git@github.com:ucb-bar/libgemmini.git
