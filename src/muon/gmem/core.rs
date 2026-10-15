@@ -92,6 +92,7 @@ impl CoreTimingModel {
 
         Self {
             hazards,
+            gmem_req_log: Vec::new(),
             graph: CoreGraph::new(
                 config,
                 num_warps,

@@ -66,6 +66,8 @@ pub struct CoreTimingModel {
     smem_latency_hist: LatencyHistogram,
     /// per-warp pipeline hazards (muon/hazards.rs); the core checks it before issuing a warp's instruction
     pub(crate) hazards: crate::muon::hazards::WarpHazards,
+    /// completed global requests, drained every cycle into the trace DB (gmem_req)
+    pub(crate) gmem_req_log: Vec<crate::sim::trace::GmemReqRecord>,
 }
 
 struct PendingClusterIssue<T> {

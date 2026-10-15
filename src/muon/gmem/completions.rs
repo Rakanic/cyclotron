@@ -115,6 +115,25 @@ impl CoreTimingModel {
         if !self.remove_gmem_pending(warp, completed_id, scheduler) {
             return;
         }
+        if completion.request.kind.is_mem() && !completion.request.is_load {
+            self.hazards.store_out(warp, true);
+        }
+        if completion.request.kind.is_mem() {
+            if let Some(&issue_at) = self.gmem_issue_cycle.get(&completed_id) {
+                let r = &completion.request;
+                self.gmem_req_log.push(crate::sim::trace::GmemReqRecord {
+                    warp: warp as u32,
+                    req_cycle: issue_at,
+                    resp_cycle: now,
+                    store: !r.is_load,
+                    address: r.addr,
+                    bytes: r.bytes,
+                    l0_hit: r.l0_hit,
+                    l1_hit: r.l1_hit,
+                    l2_hit: r.l2_hit,
+                });
+            }
+        }
         self.record_gmem_completion(now, &completion);
         self.maybe_clear_gmem_issue_cycle(completed_id);
         self.graph

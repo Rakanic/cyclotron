@@ -1,5 +1,5 @@
 # Global memory as RadianceE4M3MxGemminiSingleClusterTraceConfig has it: the default gmem.toml with the L0d of
-# RadianceConfigs.scala L0dCacheConfig (4 KiB, one MSHR) and write-allocate caches.
+# RadianceConfigs.scala L0dCacheConfig (4 KiB direct-mapped) and write-allocate caches.
 [gmem]
 
 [[gmem.levels]]
@@ -18,7 +18,7 @@ queue_capacity = 8
 [gmem.levels.mshr]
 base_latency = 1
 bytes_per_cycle = 64
-queue_capacity = 1   # RTL L0d (DCacheParams default nMSHRs = 1)
+queue_capacity = 4   # misses in flight: the RTL L0d (l0d.tlnbdCache.nbdCache) has 4 MSHRs (FSDB, fa_mxfp8_sr)
 
 [[gmem.levels]]
 banks = 2
@@ -92,7 +92,8 @@ bytes_per_cycle = 64
 queue_capacity = 4
 
 [gmem.nodes.dram]
-base_latency = 200
+# RTL (fa_mxfp8_sr, address replay of its dmem trace): DRAM requests p10 96 / p25 112 cycles; 60 here gives 103
+base_latency = 60
 bytes_per_cycle = 32
 queue_capacity = 64
 

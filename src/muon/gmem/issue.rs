@@ -69,6 +69,14 @@ impl CoreTimingModel {
                 }
             }
         }
+        // RTL LSU: a warp's global loads and stores wait for its older stores' responses (hazards.rs store_in_order)
+        if request.kind.is_mem() && self.hazards.gmem_blocked(warp) {
+            let wait_until = now.saturating_add(1);
+            scheduler.set_resource_wait_until(warp, Some(wait_until));
+            scheduler.replay_instruction(warp);
+            return Err(wait_until);
+        }
+        let is_store = request.kind.is_mem() && !request.is_load;
         let issue_bytes = request.bytes;
         let request_id = request.id;
         let dma_trigger = !request.is_load && self.graph.dma_matches_mmio(request.addr);
@@ -93,6 +101,9 @@ impl CoreTimingModel {
             Ok(LsuIssue { ticket }) => {
                 let ready_at = ticket.ready_at();
                 self.gmem_issue_cycle.entry(request_id).or_insert(now);
+                if is_store {
+                    self.hazards.store_out(warp, false);
+                }
                 self.add_gmem_pending(warp, request_id, ready_at, scheduler, split_count);
                 if is_flush {
                     self.register_fence(warp, request_id, scheduler);

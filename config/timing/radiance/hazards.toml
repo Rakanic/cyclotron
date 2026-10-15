@@ -13,5 +13,9 @@ sfu = 12          # fexp.h -> dependent 13
 load_shared = 12  # lw.shared -> use 13
 load_global = 15  # lw.global -> use 16 (an L0 hit; misses are the gmem model's)
 div = 37          # divide: holds its warp 38
-redirect = 8      # branch / jump / SIMT split-join-pred / CSR -> next instruction 9
+redirect = 8      # branch / jump / SIMT split-pred / CSR -> next instruction 9
+join = 3          # vx_join: never issued by the RTL (absent from its trace); branch -> (join) -> next 12 vs 9
 fence_smem = 9    # fence.s -> next instruction 10
+# RTL LSU.scala:550-643: a warp's global stores issue in order and its queue head advances only on the memory
+# response; loads wait for older stores. Global stores p90: RTL 594, model 1,569 without this, 110 with it.
+store_in_order = true

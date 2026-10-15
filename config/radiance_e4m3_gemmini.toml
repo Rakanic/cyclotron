@@ -30,7 +30,7 @@ preset = "radiance"
 [timing]
 include = [
   "timing/radiance/gmem.toml",
-  "timing/icache.toml",
+  "timing/radiance/icache.toml",
   "timing/lsu_scheduler.toml",
   "timing/smem.toml",
   "timing/writeback_operand_fetch.toml",

@@ -1,0 +1,17 @@
+# Instruction cache as the Radiance RTL behaves on its kernels: the default icache.toml with no misses. The default
+# draws a miss on 2 % of fetches (hit_rate 0.98, ~80 cycles each); the RTL's kernel loop shows none (fa_mxfp8_sr
+# VCS trace: its long issue gaps are neither at line crossings nor on lines the core has not fetched yet).
+[icache.hit]
+base_latency = 0
+bytes_per_cycle = 1
+queue_capacity = 16
+
+[icache.miss]
+base_latency = 40
+bytes_per_cycle = 1
+queue_capacity = 8
+
+[icache.policy]
+hit_rate = 1.0
+line_bytes = 32
+seed = 0

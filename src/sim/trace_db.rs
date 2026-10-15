@@ -63,6 +63,31 @@ impl TraceDb {
     }
 }
 
+impl TraceDb {
+    /// A global request the timing model completed (sim/trace.rs GmemReqRecord)
+    pub fn record_gmem_req(&self, cluster_id: u32, core_id: u32, r: &crate::sim::trace::GmemReqRecord) {
+        self.conn
+            .execute(
+                "INSERT INTO gmem_req (cluster_id, core_id, warp, req_cycle, resp_cycle, store, address, bytes, l0_hit, l1_hit, l2_hit)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                (
+                    cluster_id,
+                    core_id,
+                    r.warp,
+                    r.req_cycle as i64,
+                    r.resp_cycle as i64,
+                    r.store,
+                    r.address as i64,
+                    r.bytes,
+                    r.l0_hit,
+                    r.l1_hit,
+                    r.l2_hit,
+                ),
+            )
+            .expect("failed to insert into gmem_req");
+    }
+}
+
 pub fn default_trace_db_path(trace_db_path_arg: Option<&Path>, elf_path: Option<&Path>) -> PathBuf {
     if let Some(path) = trace_db_path_arg {
         path.to_path_buf()
@@ -142,6 +167,25 @@ pub fn create_new_db_overwrite(db_path: &Path) -> Connection {
         (),
     )
     .expect("failed to create smem table");
+
+    conn.execute(
+        "CREATE TABLE gmem_req (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    cluster_id INTEGER NOT NULL,
+                    core_id    INTEGER NOT NULL,
+                    warp       INTEGER NOT NULL,
+                    req_cycle  INTEGER NOT NULL,
+                    resp_cycle INTEGER NOT NULL,
+                    store      INTEGER NOT NULL CHECK (store IN (0,1)),
+                    address    INTEGER NOT NULL,
+                    bytes      INTEGER NOT NULL,
+                    l0_hit     INTEGER NOT NULL,
+                    l1_hit     INTEGER NOT NULL,
+                    l2_hit     INTEGER NOT NULL
+                )",
+        (),
+    )
+    .expect("failed to create gmem_req table");
 
     conn
 }

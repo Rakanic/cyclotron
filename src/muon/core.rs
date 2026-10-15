@@ -364,6 +364,14 @@ impl MuonCore {
         &self.tracer
     }
 
+    /// The global requests completed since the last call (timing model only)
+    pub fn take_gmem_req_log(&mut self) -> Vec<crate::sim::trace::GmemReqRecord> {
+        match &mut self.timing_mode {
+            TimingMode::Enabled(timing_model) => std::mem::take(&mut timing_model.gmem_req_log),
+            TimingMode::Disabled => Vec::new(),
+        }
+    }
+
     pub fn get_mem_tracer_mut(&mut self) -> &mut MemTracer {
         Arc::get_mut(&mut self.mem_tracer).expect("failed to get mem tracer")
     }

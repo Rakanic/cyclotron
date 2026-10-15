@@ -57,6 +57,21 @@ pub struct MemTraceLine {
     pub req_cycle: u64,
 }
 
+/// One global-memory request as the timing model completed it (the trace DB's gmem_req table): issue and
+/// completion cycles and where it hit, for comparing gmem latencies with the RTL trace's dmem req / resp cycles
+#[derive(Clone, Debug)]
+pub struct GmemReqRecord {
+    pub warp: u32,
+    pub req_cycle: u64,
+    pub resp_cycle: u64,
+    pub store: bool,
+    pub address: u64,
+    pub bytes: u32,
+    pub l0_hit: bool,
+    pub l1_hit: bool,
+    pub l2_hit: bool,
+}
+
 impl fmt::Display for Line {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(

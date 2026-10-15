@@ -3,8 +3,9 @@
 //!
 //! * Register dependences (RAW): an instruction issues only once its source registers are written; a result is
 //!   ready `latency(class)` cycles after its producer issued.
-//! * Control-flow redirects: after a branch, jump, SIMT split / join / pred, or CSR access, the warp's next
-//!   instruction issues `redirect` cycles later (the front end refetches).
+//! * Control-flow redirects: after a branch, jump, SIMT split / pred, or CSR access, the warp's next
+//!   instruction issues `redirect` cycles later (the front end refetches). `vx_join` has its own `join`: the RTL
+//!   never issues it (it is absent from the RTL trace) and it adds ~3 cycles to the redirect before it.
 //! * The divider is not pipelined: a divide holds its warp for its full latency.
 //! * `fence.s` (MISC_MEM f3 = 2) only orders the warp's shared-memory accesses -- a "fake" store-queue entry in the
 //!   RTL LSU (LSU.scala:570-572) -- so it costs `fence_smem` cycles and sends no cache flush.
@@ -38,8 +39,12 @@ pub struct HazardConfig {
     pub div: Cycle,
     /// branch / jump / SIMT control / CSR -> the warp's next instruction
     pub redirect: Cycle,
+    /// vx_join -> the warp's next instruction (the RTL front end pops the reconvergence stack without issuing it)
+    pub join: Cycle,
     /// fence.s -> the warp's next instruction
     pub fence_smem: Cycle,
+    /// a warp's global stores retire in order, each on its memory response; its next global load or store waits
+    pub store_in_order: bool,
 }
 
 impl Default for HazardConfig {
@@ -57,8 +62,10 @@ impl Default for HazardConfig {
             load_shared: 12, // lw.shared -> use 13
             load_global: 15, // lw.global -> use 16
             div: 37,         // 38, dependent or not
-            redirect: 8,     // branch / jump / vx_split / vx_join -> next 9
+            redirect: 8,     // branch / jump / vx_split / CSR -> next 9
+            join: 8,         // as a redirect unless configured (RTL: +3 on the preceding redirect)
             fence_smem: 9,   // fence.s -> next 10
+            store_in_order: false,
         }
     }
 }
@@ -74,6 +81,7 @@ enum Class {
     LoadShared,
     LoadGlobal,
     Redirect,
+    Join,
     FenceSmem,
     Other, // stores, barriers, plain fences: no result, no redirect
 }
@@ -104,6 +112,7 @@ fn classify(inst: &DecodedInst) -> Class {
             }
         }
         Opcode::CUSTOM3 => Class::Sfu,
+        Opcode::CUSTOM0 if inst.f3 == 3 => Class::Join, // vx_join
         Opcode::BRANCH | Opcode::JAL | Opcode::JALR | Opcode::CUSTOM0 | Opcode::SYSTEM => Class::Redirect,
         Opcode::MISC_MEM if inst.f3 == 2 => Class::FenceSmem,
         _ => Class::Other,
@@ -143,6 +152,7 @@ pub struct WarpHazards {
     config: HazardConfig,
     reg_ready: Vec<Vec<Cycle>>, // [warp][register]: the cycle a dependent instruction may issue
     next_issue: Vec<Cycle>,     // [warp]: redirects, a running divide, fence.s
+    stores_out: Vec<u32>,       // [warp]: global stores sent and not yet answered
     pub stalls: u64,            // instruction issues it delayed
 }
 
@@ -152,6 +162,7 @@ impl WarpHazards {
             config,
             reg_ready: vec![vec![0; 256]; num_warps],
             next_issue: vec![0; num_warps],
+            stores_out: vec![0; num_warps],
             stalls: 0,
         }
     }
@@ -177,6 +188,19 @@ impl WarpHazards {
             .fold(self.next_issue[wid], Cycle::max)
     }
 
+    /// A global memory request of warp `wid` must wait for the warp's stores to retire
+    pub fn gmem_blocked(&self, wid: usize) -> bool {
+        self.config.enabled && self.config.store_in_order && self.stores_out[wid] > 0
+    }
+
+    /// A global store of warp `wid` was sent (`done` = false) or answered (`done` = true)
+    pub fn store_out(&mut self, wid: usize, done: bool) {
+        if self.config.enabled && self.config.store_in_order {
+            let n = &mut self.stores_out[wid];
+            *n = if done { n.saturating_sub(1) } else { *n + 1 };
+        }
+    }
+
     /// A delayed issue (for the stall count)
     pub fn note_stall(&mut self) {
         self.stalls += 1;
@@ -198,7 +222,7 @@ impl WarpHazards {
             Class::Sfu => c.sfu,
             Class::LoadShared => c.load_shared,
             Class::LoadGlobal => c.load_global,
-            Class::Redirect => c.alu,
+            Class::Redirect | Class::Join => c.alu,
             Class::FenceSmem | Class::Other => 0,
         };
         if writes_rd(inst) && latency > 0 {
@@ -206,6 +230,7 @@ impl WarpHazards {
         }
         let hold = match cls {
             Class::Redirect => c.redirect,
+            Class::Join => c.join,
             Class::Div => c.div,
             Class::FenceSmem => c.fence_smem,
             _ => 0,

@@ -27,6 +27,11 @@ pub struct Sim {
 impl Sim {
     fn drain_traces(&mut self) {
         let Some(trace_db) = self.trace_db.as_ref() else {
+            for cluster in self.top.clusters.iter_mut() {
+                for core in cluster.cores.iter_mut() {
+                    core.take_gmem_req_log();
+                }
+            }
             return;
         };
         let trace_db = trace_db.lock().expect("trace db lock poisoned");
@@ -41,6 +46,9 @@ impl Sim {
                 }
                 while let Some(line) = core.get_mem_tracer_mut().consume() {
                     trace_db.record_mem_line(cluster_id as u32, core_id as u32, &line);
+                }
+                for r in core.take_gmem_req_log() {
+                    trace_db.record_gmem_req(cluster_id as u32, core_id as u32, &r);
                 }
             }
         }
