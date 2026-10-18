@@ -183,6 +183,11 @@ entries = 8
 [gmem.policy]
 # Rocket DCache L0 / L1 and the InclusiveCache L2 allocate on writes
 write_allocate = true
+# Requests in flight (acceptance -> response) through each core's L0d and the cluster L1 input adapters: Radiance
+# MemParallelism l0dInFlight 3, l1InFlight 3 (DepthHellaCacheIF). fa_mxfp8_sr FSDB: neither port ever above 3; in the
+# prologue the L0d (core 0) sits at 3 for 69 % of cycles, the L1 for 56 %.
+l0_inflight_limit = 3
+l1_inflight_limit = 3
 l0_enabled = true
 
 # dirty eviction probabilities (used to route through writeback queues)

@@ -45,6 +45,8 @@ pub struct GmemRequest {
     pub l2_writeback: bool,
     pub l1_bank: usize,
     pub l2_bank: usize,
+    /// in-flight slots it holds until it completes: bit 0 its core's L0 adapter, bit 1 its cluster's L1 (policy)
+    pub inflight_held: u8,
 }
 
 impl GmemRequest {
@@ -75,6 +77,7 @@ impl GmemRequest {
             l2_writeback: false,
             l1_bank: 0,
             l2_bank: 0,
+            inflight_held: 0,
         }
     }
 
@@ -100,6 +103,7 @@ impl GmemRequest {
             l2_writeback: false,
             l1_bank: 0,
             l2_bank: 0,
+            inflight_held: 0,
         }
     }
 
@@ -125,6 +129,7 @@ impl GmemRequest {
             l2_writeback: false,
             l1_bank: 0,
             l2_bank: 0,
+            inflight_held: 0,
         }
     }
 }

@@ -23,6 +23,11 @@ pub struct GmemPolicyConfig {
     /// A store miss fills its line at every level, as Rocket's DCache (Muon L0 / L1) and the InclusiveCache L2 do
     /// (write-allocate); false: stores never fill (later stores to the line keep missing)
     pub write_allocate: bool,
+    /// Requests a core's L0 / a cluster's L1 input adapter holds from acceptance to response (0 = no limit). A request
+    /// over the limit is refused and retried, as the RTL adapter (DepthHellaCacheIF) drops ready: Radiance
+    /// MemParallelism l0dInFlight / l1InFlight. Requests that miss the L0 count against the L1 limit.
+    pub l0_inflight_limit: usize,
+    pub l1_inflight_limit: usize,
 }
 
 impl Default for GmemPolicyConfig {
@@ -46,6 +51,8 @@ impl Default for GmemPolicyConfig {
             flush_bytes: 4096,
             seed: 0,
             write_allocate: false,
+            l0_inflight_limit: 0,
+            l1_inflight_limit: 0,
         };
         s.ensure_valid();
         s

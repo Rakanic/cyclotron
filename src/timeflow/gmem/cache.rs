@@ -69,6 +69,12 @@ impl CacheTagArray {
         false
     }
 
+    /// Is the line present? (no LRU update)
+    pub(crate) fn contains(&self, line_addr: u64) -> bool {
+        let set_idx = (line_addr as usize) % self.sets;
+        (0..self.ways).any(|way| self.get_tag(set_idx, way) == Some(line_addr))
+    }
+
     pub(crate) fn fill(&mut self, line_addr: u64) {
         let set_idx = (line_addr as usize) % self.sets;
         let mut hit_way = None;

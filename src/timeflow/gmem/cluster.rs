@@ -200,6 +200,7 @@ pub struct ClusterGmemGraph {
     hierarchy: GmemHierarchy,
     last_tick: Cycle,
     stats_range: Option<super::graph_build::GmemStatsRange>,
+    l1_inflight: Vec<usize>, // [cluster] requests its L1 adapter holds (policy.l1_inflight_limit)
 }
 
 const L1_BANK_SEED: u64 = 0x1111_2222_3333_4444;
@@ -211,6 +212,7 @@ struct ClusterCoreState {
     completions: VecDeque<GmemCompletion>,
     stats: GmemStats,
     next_id: u64,
+    l0_inflight: usize, // requests its L0 adapter holds (policy.l0_inflight_limit)
 }
 
 impl ClusterGmemGraph {
@@ -236,6 +238,7 @@ impl ClusterGmemGraph {
                 completions: VecDeque::new(),
                 stats: GmemStats::default(),
                 next_id: 0,
+                l0_inflight: 0,
             });
         }
 
@@ -282,6 +285,7 @@ impl ClusterGmemGraph {
             hierarchy,
             last_tick: u64::MAX,
             stats_range: config.stats_range,
+            l1_inflight: vec![0; num_clusters],
         }
     }
 
@@ -337,6 +341,24 @@ impl ClusterGmemGraph {
         }
 
         let lines = self.compute_cache_lines(&mut request);
+        // the L0 / L1 input adapters hold a request from acceptance to its response (policy in-flight limits);
+        // checked before the access touches any cache state
+        let needs_l1 = !(self.policy.l0_enabled
+            && core_id < self.hierarchy.l0.len()
+            && self.hierarchy.l0[core_id].tags.contains(lines.l0_line));
+        let l0_limit = self.policy.l0_inflight_limit;
+        let l1_limit = self.policy.l1_inflight_limit;
+        if (l0_limit > 0 && self.cores[core_id].l0_inflight >= l0_limit)
+            || (needs_l1 && l1_limit > 0 && self.l1_inflight[cluster_id] >= l1_limit)
+        {
+            return Err(GmemReject {
+                payload: request,
+                retry_at: now.saturating_add(1),
+                reason: GmemRejectReason::QueueFull,
+            });
+        }
+        request.inflight_held = (l0_limit > 0) as u8 | (((needs_l1 && l1_limit > 0) as u8) << 1);
+        let held = request.inflight_held;
         let track_stats = self.stats_enabled_for(request.addr);
         let miss_level =
             self.record_cache_accesses(core_id, cluster_id, &mut request, &lines, track_stats);
@@ -357,6 +379,7 @@ impl ClusterGmemGraph {
 
         let (l0_new, l1_new, l2_new) = match allocation {
             AllocationResult::Merge { ready_at, bytes } => {
+                self.take_inflight(core_id, cluster_id, held);
                 return Ok(self.issue_merge(
                     core_id,
                     assigned_id,
@@ -392,6 +415,7 @@ impl ClusterGmemGraph {
             }
         };
 
+        self.take_inflight(core_id, cluster_id, held);
         let ready_at = issue.ticket.ready_at();
         match miss_level {
             MissLevel::None => {}
@@ -981,6 +1005,28 @@ impl ClusterGmemGraph {
         Err(self.queue_full_reject(now, request))
     }
 
+    fn take_inflight(&mut self, core_id: usize, cluster_id: usize, held: u8) {
+        if held & 1 != 0 {
+            self.cores[core_id].l0_inflight += 1;
+        }
+        if held & 2 != 0 {
+            self.l1_inflight[cluster_id] += 1;
+        }
+    }
+
+    fn release_inflight(&mut self, request: &GmemRequest) {
+        if request.inflight_held & 1 != 0 {
+            if let Some(c) = self.cores.get_mut(request.core_id) {
+                c.l0_inflight = c.l0_inflight.saturating_sub(1);
+            }
+        }
+        if request.inflight_held & 2 != 0 {
+            if let Some(n) = self.l1_inflight.get_mut(request.cluster_id) {
+                *n = n.saturating_sub(1);
+            }
+        }
+    }
+
     fn issue_merge(
         &mut self,
         core_id: usize,
@@ -1008,6 +1054,7 @@ impl ClusterGmemGraph {
     }
 
     fn push_completion(&mut self, request: GmemRequest, ticket_ready_at: Cycle, now: Cycle) {
+        self.release_inflight(&request);
         let core_id = request.core_id;
         let addr = request.addr;
         let track = self.stats_enabled_for(addr);
