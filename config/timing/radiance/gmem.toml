@@ -188,6 +188,12 @@ write_allocate = true
 # prologue the L0d (core 0) sits at 3 for 69 % of cycles, the L1 for 56 %.
 l0_inflight_limit = 3
 l1_inflight_limit = 3
+# a 64 B L0d line is fetched as two 32 B L1 requests, each holding an L1 slot (prologue: 693 stack Gets into the L1)
+l1_inflight_per_line = true
+# dirty L0d lines: an eviction (or flush) writes the line back as two 32 B Puts into the L1, each holding an L1 slot
+# for the mean L1 Put latency (fa_mxfp8_sr FSDB: prologue 512 stack Puts into the L1, mean 22 cycles, 99 % L1 hits)
+l0_writeback_model = true
+l0_writeback_cycles = 22
 l0_enabled = true
 
 # dirty eviction probabilities (used to route through writeback queues)

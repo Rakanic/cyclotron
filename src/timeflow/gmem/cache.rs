@@ -75,7 +75,8 @@ impl CacheTagArray {
         (0..self.ways).any(|way| self.get_tag(set_idx, way) == Some(line_addr))
     }
 
-    pub(crate) fn fill(&mut self, line_addr: u64) {
+    /// Bring `line_addr` in (LRU victim when the set is full); the valid line it replaced, if any
+    pub(crate) fn fill(&mut self, line_addr: u64) -> Option<u64> {
         let set_idx = (line_addr as usize) % self.sets;
         let mut hit_way = None;
         for way in 0..self.ways {
@@ -87,7 +88,7 @@ impl CacheTagArray {
         }
         if let Some(way) = hit_way {
             self.touch(set_idx, way);
-            return;
+            return None;
         }
 
         let mut empty_way = None;
@@ -98,8 +99,10 @@ impl CacheTagArray {
             }
         }
         let way = empty_way.unwrap_or_else(|| *self.lru[set_idx].last().unwrap_or(&0));
+        let victim = self.get_tag(set_idx, way);
         self.set_tag(set_idx, way, Some(line_addr));
         self.touch(set_idx, way);
+        victim
     }
 
     pub(crate) fn invalidate_all(&mut self) {

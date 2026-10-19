@@ -7,6 +7,7 @@ use crate::timeflow::{
 use crate::timeq::{Backpressure, Cycle, ServiceRequest, Ticket};
 
 use super::cache::CacheTagArray;
+use super::dirty::L0Writebacks;
 use super::graph_build::{build_cluster_graph, GmemFlowConfig};
 use super::mshr::{MissLevel, MissMetadata, MshrTable};
 use super::policy::{bank_for, decide, line_addr, GmemPolicyConfig};
@@ -200,7 +201,16 @@ pub struct ClusterGmemGraph {
     hierarchy: GmemHierarchy,
     last_tick: Cycle,
     stats_range: Option<super::graph_build::GmemStatsRange>,
-    l1_inflight: Vec<usize>, // [cluster] requests its L1 adapter holds (policy.l1_inflight_limit)
+    l1_inflight: Vec<usize>, // [cluster] slots its L1 adapter holds (policy.l1_inflight_limit)
+    // l1_inflight_per_line: an L0 miss admitted with fewer free slots than its L1 lines is owed the rest, granted in
+    // order as slots free (the RTL's second 32 B Get waits for a slot); [cluster] queue of (core, request id)
+    l1_owed: Vec<VecDeque<(usize, u64)>>,
+    l1_owed_granted: std::collections::HashMap<(usize, u64), usize>,
+    // [core] (first refused, last refused) for an L1 slot: the oldest waiter still retrying (refused this cycle or
+    // the last) goes first -- the L1 input crossbar's arbitration
+    l1_wait_since: Vec<Option<(Cycle, Cycle)>>,
+    cores_per_cluster: usize,
+    l0_writebacks: Option<L0Writebacks>, // policy.l0_writeback_model
 }
 
 const L1_BANK_SEED: u64 = 0x1111_2222_3333_4444;
@@ -286,6 +296,18 @@ impl ClusterGmemGraph {
             last_tick: u64::MAX,
             stats_range: config.stats_range,
             l1_inflight: vec![0; num_clusters],
+            l1_owed: (0..num_clusters).map(|_| VecDeque::new()).collect(),
+            l1_owed_granted: std::collections::HashMap::new(),
+            l1_wait_since: vec![None; total_cores],
+            cores_per_cluster: cores_per_cluster.max(1),
+            l0_writebacks: (policy.l0_writeback_model && policy.l0_enabled).then(|| {
+                L0Writebacks::new(
+                    total_cores,
+                    num_clusters,
+                    (policy.l0_line_bytes / policy.l1_line_bytes.max(1)).max(1) as usize,
+                    policy.l0_writeback_cycles,
+                )
+            }),
         }
     }
 
@@ -348,17 +370,38 @@ impl ClusterGmemGraph {
             && self.hierarchy.l0[core_id].tags.contains(lines.l0_line));
         let l0_limit = self.policy.l0_inflight_limit;
         let l1_limit = self.policy.l1_inflight_limit;
-        if (l0_limit > 0 && self.cores[core_id].l0_inflight >= l0_limit)
-            || (needs_l1 && l1_limit > 0 && self.l1_inflight[cluster_id] >= l1_limit)
-        {
+        let l1_slots = if !needs_l1 || l1_limit == 0 {
+            0
+        } else if self.policy.l1_inflight_per_line && self.policy.l0_enabled {
+            (self.policy.l0_line_bytes / self.policy.l1_line_bytes.max(1)).max(1) as usize
+        } else {
+            1
+        };
+        let l1_free = l1_limit.saturating_sub(self.l1_inflight[cluster_id]);
+        let l1_blocked = l1_slots > 0 && (l1_free == 0 || !self.l1_owed[cluster_id].is_empty() || {
+            // an older waiter of the same cluster goes first
+            let mine = self.l1_wait_since[core_id].map_or(now, |w| w.0);
+            let base = cluster_id * self.cores_per_cluster;
+            (base..(base + self.cores_per_cluster).min(self.l1_wait_since.len())).any(|c| {
+                c != core_id
+                    && self.l1_wait_since[c].map_or(false, |(since, last)| since < mine && last + 1 >= now)
+            })
+        });
+        if (l0_limit > 0 && self.cores[core_id].l0_inflight >= l0_limit) || l1_blocked {
+            if l1_blocked {
+                let since = self.l1_wait_since[core_id].map_or(now, |w| w.0);
+                self.l1_wait_since[core_id] = Some((since, now));
+            }
             return Err(GmemReject {
                 payload: request,
                 retry_at: now.saturating_add(1),
                 reason: GmemRejectReason::QueueFull,
             });
         }
-        request.inflight_held = (l0_limit > 0) as u8 | (((needs_l1 && l1_limit > 0) as u8) << 1);
-        let held = request.inflight_held;
+        let l1_take = l1_slots.min(l1_free);
+        request.inflight_l0 = (l0_limit > 0) as u8;
+        request.inflight_l1 = l1_take as u8;
+        let held = (request.inflight_l0, request.inflight_l1, l1_slots - l1_take, assigned_id);
         let track_stats = self.stats_enabled_for(request.addr);
         let miss_level =
             self.record_cache_accesses(core_id, cluster_id, &mut request, &lines, track_stats);
@@ -449,6 +492,7 @@ impl ClusterGmemGraph {
             return;
         }
         self.last_tick = now;
+        self.step_l0_writebacks(now);
 
         self.graph.tick(now);
 
@@ -1005,24 +1049,62 @@ impl ClusterGmemGraph {
         Err(self.queue_full_reject(now, request))
     }
 
-    fn take_inflight(&mut self, core_id: usize, cluster_id: usize, held: u8) {
-        if held & 1 != 0 {
-            self.cores[core_id].l0_inflight += 1;
+    /// held: (L0 slots, L1 slots taken now, L1 slots owed, request id)
+    fn take_inflight(&mut self, core_id: usize, cluster_id: usize, held: (u8, u8, usize, u64)) {
+        self.cores[core_id].l0_inflight += held.0 as usize;
+        self.l1_inflight[cluster_id] += held.1 as usize;
+        if held.1 > 0 {
+            self.l1_wait_since[core_id] = None;
         }
-        if held & 2 != 0 {
-            self.l1_inflight[cluster_id] += 1;
+        for _ in 0..held.2 {
+            self.l1_owed[cluster_id].push_back((core_id, held.3));
         }
     }
 
     fn release_inflight(&mut self, request: &GmemRequest) {
-        if request.inflight_held & 1 != 0 {
-            if let Some(c) = self.cores.get_mut(request.core_id) {
-                c.l0_inflight = c.l0_inflight.saturating_sub(1);
+        if let Some(c) = self.cores.get_mut(request.core_id) {
+            c.l0_inflight = c.l0_inflight.saturating_sub(request.inflight_l0 as usize);
+        }
+        let cluster = request.cluster_id;
+        if cluster >= self.l1_inflight.len() {
+            return;
+        }
+        let key = (request.core_id, request.id);
+        let granted = self.l1_owed_granted.remove(&key).unwrap_or(0);
+        self.l1_owed[cluster].retain(|&k| k != key);   // owed slots it no longer needs
+        self.l1_inflight[cluster] = self.l1_inflight[cluster].saturating_sub(request.inflight_l1 as usize + granted);
+        self.grant_owed(cluster);
+    }
+
+    /// Freed L1 slots go to owed ones first, in order
+    fn grant_owed(&mut self, cluster: usize) {
+        let limit = self.policy.l1_inflight_limit;
+        while self.l1_inflight[cluster] < limit {
+            match self.l1_owed[cluster].pop_front() {
+                Some(k) => {
+                    self.l1_inflight[cluster] += 1;
+                    *self.l1_owed_granted.entry(k).or_insert(0) += 1;
+                }
+                None => break,
             }
         }
-        if request.inflight_held & 2 != 0 {
-            if let Some(n) = self.l1_inflight.get_mut(request.cluster_id) {
-                *n = n.saturating_sub(1);
+    }
+
+    /// Dirty-L0 writebacks (gmem/dirty.rs): Puts whose hold ended free their L1 slots; waiting Puts take free ones
+    /// (after owed slots, before new requests, which retry next cycle)
+    fn step_l0_writebacks(&mut self, now: Cycle) {
+        if self.l0_writebacks.is_none() {
+            return;
+        }
+        let limit = self.policy.l1_inflight_limit;
+        for cluster in 0..self.l1_inflight.len() {
+            let freed = self.l0_writebacks.as_mut().unwrap().expire(cluster, now);
+            self.l1_inflight[cluster] = self.l1_inflight[cluster].saturating_sub(freed);
+            self.grant_owed(cluster);
+            let wb = self.l0_writebacks.as_mut().unwrap();
+            while wb.pending(cluster) > 0 && (limit == 0 || self.l1_inflight[cluster] < limit) {
+                wb.start(cluster, now);
+                self.l1_inflight[cluster] += 1;
             }
         }
     }
@@ -1081,6 +1163,9 @@ impl ClusterGmemGraph {
         if request.kind.is_flush_l0() {
             if self.policy.l0_enabled && request.core_id < self.hierarchy.l0.len() {
                 self.hierarchy.l0[request.core_id].tags.invalidate_all();
+                if let Some(wb) = self.l0_writebacks.as_mut() {
+                    wb.flushed(request.core_id, request.cluster_id);
+                }
             }
             return;
         }
@@ -1094,6 +1179,11 @@ impl ClusterGmemGraph {
             return;
         }
         if !request.is_load && !self.policy.write_allocate {
+            if request.l0_hit {
+                if let Some(wb) = self.l0_writebacks.as_mut() {
+                    wb.mark_dirty(request.core_id, line_addr(request.addr, self.policy.l0_line_bytes));
+                }
+            }
             return;
         }
 
@@ -1108,7 +1198,15 @@ impl ClusterGmemGraph {
         let l2_line = line_addr(request.addr, policy.l2_line_bytes);
 
         if l0_enabled && !request.l0_hit && request.core_id < self.hierarchy.l0.len() {
-            self.hierarchy.l0[request.core_id].tags.fill(l0_line);
+            let victim = self.hierarchy.l0[request.core_id].tags.fill(l0_line);
+            if let (Some(wb), Some(v)) = (self.l0_writebacks.as_mut(), victim) {
+                wb.evicted(request.core_id, request.cluster_id, v);
+            }
+        }
+        if l0_enabled && !request.is_load {
+            if let Some(wb) = self.l0_writebacks.as_mut() {
+                wb.mark_dirty(request.core_id, l0_line);
+            }
         }
         if !request.l1_hit && request.cluster_id < self.hierarchy.l1.len() {
             self.hierarchy.l1[request.cluster_id].tags.fill(l1_line);

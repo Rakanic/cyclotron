@@ -1,5 +1,6 @@
 pub mod cache;
 mod cluster;
+mod dirty;
 mod graph_build;
 pub mod mshr;
 pub mod policy;

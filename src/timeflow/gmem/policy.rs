@@ -28,6 +28,13 @@ pub struct GmemPolicyConfig {
     /// MemParallelism l0dInFlight / l1InFlight. Requests that miss the L0 count against the L1 limit.
     pub l0_inflight_limit: usize,
     pub l1_inflight_limit: usize,
+    /// An L0 miss holds one L1 in-flight slot per L1 line it covers (l0_line_bytes / l1_line_bytes): the RTL fetches a
+    /// 64 B L0d line as two 32 B L1 requests
+    pub l1_inflight_per_line: bool,
+    /// Track dirty L0 lines; evicting (or flushing) one sends l0_line_bytes / l1_line_bytes Puts into the cluster L1,
+    /// each holding an L1 in-flight slot for l0_writeback_cycles (gmem/dirty.rs)
+    pub l0_writeback_model: bool,
+    pub l0_writeback_cycles: u64,
 }
 
 impl Default for GmemPolicyConfig {
@@ -53,6 +60,9 @@ impl Default for GmemPolicyConfig {
             write_allocate: false,
             l0_inflight_limit: 0,
             l1_inflight_limit: 0,
+            l1_inflight_per_line: false,
+            l0_writeback_model: false,
+            l0_writeback_cycles: 22,
         };
         s.ensure_valid();
         s
