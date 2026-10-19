@@ -16,9 +16,14 @@ impl CoreTimingModel {
                 None => break,
             };
 
+            let mut hold_lsu = false;
             match &payload {
                 LsuPayload::Gmem(req) => {
                     let split = self.split_gmem_request(req);
+                    if self.hazards.store_in_order() && req.kind.is_mem() && !req.is_load {
+                        self.held_store_lsu.insert((req.warp, req.id), (payload.clone(), split.len()));
+                        hold_lsu = true;
+                    }
                     for child in split {
                         self.pending_cluster_gmem.push_back(PendingClusterIssue {
                             request: child,
@@ -38,7 +43,9 @@ impl CoreTimingModel {
             }
 
             if let Some(completion) = self.graph.lsu_take_ready(now) {
-                self.graph.lsu_release_issue_resources(&completion.request);
+                if !hold_lsu {
+                    self.graph.lsu_release_issue_resources(&completion.request);
+                }
             }
         }
     }
@@ -50,13 +57,30 @@ impl CoreTimingModel {
 
         let mut pending = VecDeque::with_capacity(self.pending_cluster_gmem.len());
         let mut remaining = self.pending_cluster_gmem.len();
+        // store_in_order: a warp whose store had to wait sends nothing after it this cycle (stores stay in order)
+        let mut store_blocked: Vec<usize> = Vec::new();
         while remaining > 0 {
             remaining -= 1;
             let entry = match self.pending_cluster_gmem.pop_front() {
                 Some(entry) => entry,
                 None => break,
             };
+            let req = &entry.request;
+            let ordered_store = self.hazards.store_in_order() && req.kind.is_mem() && !req.is_load;
+            if ordered_store
+                && (store_blocked.contains(&req.warp) || !self.hazards.store_may_send(req.warp, req.id))
+            {
+                store_blocked.push(req.warp);
+                pending.push_back(PendingClusterIssue {
+                    request: entry.request,
+                    retry_at: now.saturating_add(1),
+                });
+                continue;
+            }
             if entry.retry_at > now {
+                if ordered_store {
+                    store_blocked.push(entry.request.warp);
+                }
                 pending.push_back(entry);
                 continue;
             }
@@ -77,6 +101,22 @@ impl CoreTimingModel {
                 .cluster_gmem_issue(self.core_id, now, entry.request.clone());
             match issue {
                 Ok(_) => {
+                    if ordered_store {
+                        let key = (entry.request.warp, entry.request.id);
+                        self.hazards.store_sent(key.0, key.1);
+                        let done = match self.held_store_lsu.get_mut(&key) {
+                            Some(h) => {
+                                h.1 = h.1.saturating_sub(1);
+                                h.1 == 0
+                            }
+                            None => false,
+                        };
+                        if done {
+                            if let Some((payload, _)) = self.held_store_lsu.remove(&key) {
+                                self.graph.lsu_release_issue_resources(&payload);
+                            }
+                        }
+                    }
                     let _ = self
                         .graph
                         .lsu_reserve_load_data(&LsuPayload::Gmem(entry.request));
@@ -86,6 +126,9 @@ impl CoreTimingModel {
                     retry_at,
                     ..
                 }) => {
+                    if ordered_store {
+                        store_blocked.push(request.warp);
+                    }
                     pending.push_back(PendingClusterIssue { request, retry_at });
                 }
             }

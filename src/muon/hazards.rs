@@ -152,7 +152,9 @@ pub struct WarpHazards {
     config: HazardConfig,
     reg_ready: Vec<Vec<Cycle>>, // [warp][register]: the cycle a dependent instruction may issue
     next_issue: Vec<Cycle>,     // [warp]: redirects, a running divide, fence.s
-    stores_out: Vec<u32>,       // [warp]: global stores sent and not yet answered
+    stores_out: Vec<u32>,       // [warp]: global store parts accepted by the LSU and not yet answered
+    // [warp]: the store whose parts are in the memory system (request id, parts not yet answered)
+    store_in_memory: Vec<Option<(u64, u32)>>,
     pub stalls: u64,            // instruction issues it delayed
 }
 
@@ -163,6 +165,7 @@ impl WarpHazards {
             reg_ready: vec![vec![0; 256]; num_warps],
             next_issue: vec![0; num_warps],
             stores_out: vec![0; num_warps],
+            store_in_memory: vec![None; num_warps],
             stalls: 0,
         }
     }
@@ -188,16 +191,48 @@ impl WarpHazards {
             .fold(self.next_issue[wid], Cycle::max)
     }
 
-    /// A global memory request of warp `wid` must wait for the warp's stores to retire
-    pub fn gmem_blocked(&self, wid: usize) -> bool {
-        self.config.enabled && self.config.store_in_order && self.stores_out[wid] > 0
+    // store_in_order (RTL LSU.scala:520-643): a warp's store instructions enter its store queue without stalling
+    // it; the queue sends them to memory one at a time, the next only after the previous one's response; a global
+    // load waits until every older store of its warp is answered.
+
+    pub fn store_in_order(&self) -> bool {
+        self.config.enabled && self.config.store_in_order
     }
 
-    /// A global store of warp `wid` was sent (`done` = false) or answered (`done` = true)
-    pub fn store_out(&mut self, wid: usize, done: bool) {
-        if self.config.enabled && self.config.store_in_order {
-            let n = &mut self.stores_out[wid];
-            *n = if done { n.saturating_sub(1) } else { *n + 1 };
+    /// A global load of warp `wid` must wait for the warp's older stores to be answered
+    pub fn load_blocked(&self, wid: usize) -> bool {
+        self.store_in_order() && self.stores_out[wid] > 0
+    }
+
+    /// The LSU accepted a global store of warp `wid` split into `parts` memory requests
+    pub fn store_accepted(&mut self, wid: usize, parts: usize) {
+        if self.store_in_order() {
+            self.stores_out[wid] += parts as u32;
+        }
+    }
+
+    /// May a part of store `id` of warp `wid` go to memory now? (no other store of the warp is there)
+    pub fn store_may_send(&self, wid: usize, id: u64) -> bool {
+        !self.store_in_order() || self.store_in_memory[wid].map_or(true, |(cur, _)| cur == id)
+    }
+
+    /// A part of store `id` of warp `wid` went to memory
+    pub fn store_sent(&mut self, wid: usize, id: u64) {
+        if self.store_in_order() {
+            let n = self.store_in_memory[wid].map_or(0, |(_, n)| n);
+            self.store_in_memory[wid] = Some((id, n + 1));
+        }
+    }
+
+    /// A part of store `id` of warp `wid` was answered
+    pub fn store_answered(&mut self, wid: usize, id: u64) {
+        if self.store_in_order() {
+            self.stores_out[wid] = self.stores_out[wid].saturating_sub(1);
+            if let Some((cur, n)) = self.store_in_memory[wid] {
+                if cur == id {
+                    self.store_in_memory[wid] = if n > 1 { Some((cur, n - 1)) } else { None };
+                }
+            }
         }
     }
 

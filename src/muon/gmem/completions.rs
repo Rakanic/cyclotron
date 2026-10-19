@@ -116,7 +116,7 @@ impl CoreTimingModel {
             return;
         }
         if completion.request.kind.is_mem() && !completion.request.is_load {
-            self.hazards.store_out(warp, true);
+            self.hazards.store_answered(warp, completed_id);
         }
         if completion.request.kind.is_mem() {
             if let Some(&issue_at) = self.gmem_issue_cycle.get(&completed_id) {

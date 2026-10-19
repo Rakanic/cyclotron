@@ -31,6 +31,9 @@ pub struct CoreTimingModel {
     fence_inflight: Vec<Option<u64>>,
     icache_inflight: Vec<Option<IcacheInflight>>,
     pending_cluster_gmem: VecDeque<PendingClusterIssue<GmemRequest>>,
+    // hazards store_in_order: a global store's LSU resources (its store-data entry) until all its parts went to
+    // memory -- the RTL frees a store-data entry when the store issues -- (warp, id) -> (payload, parts left)
+    held_store_lsu: HashMap<(usize, u64), (crate::timeflow::lsu::LsuPayload, usize)>,
     pending_cluster_smem: VecDeque<PendingClusterIssue<SmemRequest>>,
     pending_gmem: Vec<VecDeque<(u64, Cycle)>>,
     pending_smem: Vec<VecDeque<(u64, Cycle)>>,

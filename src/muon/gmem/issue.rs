@@ -69,8 +69,9 @@ impl CoreTimingModel {
                 }
             }
         }
-        // RTL LSU: a warp's global loads and stores wait for its older stores' responses (hazards.rs store_in_order)
-        if request.kind.is_mem() && self.hazards.gmem_blocked(warp) {
+        // RTL LSU: a warp's global load waits for its older stores' responses (hazards.rs store_in_order; the
+        // stores themselves queue without stalling the warp and go to memory in order, pending.rs)
+        if request.kind.is_mem() && request.is_load && self.hazards.load_blocked(warp) {
             let wait_until = now.saturating_add(1);
             scheduler.set_resource_wait_until(warp, Some(wait_until));
             scheduler.replay_instruction(warp);
@@ -102,7 +103,7 @@ impl CoreTimingModel {
                 let ready_at = ticket.ready_at();
                 self.gmem_issue_cycle.entry(request_id).or_insert(now);
                 if is_store {
-                    self.hazards.store_out(warp, false);
+                    self.hazards.store_accepted(warp, split_count);
                 }
                 self.add_gmem_pending(warp, request_id, ready_at, scheduler, split_count);
                 if is_flush {

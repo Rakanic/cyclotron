@@ -107,6 +107,7 @@ impl CoreTimingModel {
             fence_inflight: vec![None; num_warps],
             icache_inflight: vec![None; num_warps],
             pending_cluster_gmem: VecDeque::new(),
+            held_store_lsu: std::collections::HashMap::new(),
             pending_cluster_smem: VecDeque::new(),
             pending_gmem: vec![VecDeque::new(); num_warps],
             pending_smem: vec![VecDeque::new(); num_warps],
